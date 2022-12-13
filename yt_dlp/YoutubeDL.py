@@ -1358,7 +1358,8 @@ class YoutubeDL:
         return self.get_output_path(dir_type, filename)
 
     def _match_entry(self, info_dict, incomplete=False, silent=False):
-        """Returns None if the file should be downloaded"""
+        """Returns None if the file should be downloaded, False if the file is already present in
+        the download archive, or a string describing another reason to skip the file"""
         _type = info_dict.get('_type', 'video')
         assert incomplete or _type == 'video', 'Only video result can be considered complete'
 
@@ -1421,16 +1422,18 @@ class YoutubeDL:
 
         if self.in_download_archive(info_dict):
             reason = '%s has already been recorded in the archive' % video_title
+            ret = False
             break_opt, break_err = 'break_on_existing', ExistingVideoReached
         else:
             reason = check_filter()
+            ret = reason
             break_opt, break_err = 'break_on_reject', RejectedVideoReached
         if reason is not None:
             if not silent:
                 self.to_screen('[download] ' + reason)
             if self.params.get(break_opt, False):
                 raise break_err()
-        return reason
+        return ret
 
     @staticmethod
     def add_extra_info(info_dict, extra_info):
@@ -1644,6 +1647,7 @@ class YoutubeDL:
                 self._raise_pending_errors(info_copy)
                 if self.params.get('force_write_download_archive', False):
                     self.record_download_archive(info_copy)
+                ie_result['__write_download_archive'] = self.params.get('force_write_download_archive', False)
                 return ie_result
 
         if result_type == 'video':
@@ -1781,7 +1785,9 @@ class YoutubeDL:
 
         common_info = self._playlist_infodict(ie_result, strict=True)
         title = common_info.get('playlist') or '<Untitled>'
-        if self._match_entry(common_info, incomplete=True) is not None:
+        skip_reason = self._match_entry(common_info, incomplete=True)
+        if skip_reason is not None:
+            ie_result['__write_download_archive'] = skip_reason is False
             return
         self.to_screen(f'[download] Downloading {ie_result["_type"]}: {title}')
 
@@ -1836,6 +1842,7 @@ class YoutubeDL:
             self.write_debug('The information of all playlist entries will be held in memory')
 
         failures = 0
+        all_write_download_archive = True
         max_failures = self.params.get('skip_playlist_after_errors') or float('inf')
         for i, (playlist_index, entry) in enumerate(entries):
             if lazy:
@@ -1869,6 +1876,8 @@ class YoutubeDL:
             entry_result = self.__process_iterable_entry(entry, download, extra)
             if not entry_result:
                 failures += 1
+            elif not entry_result.get('__write_download_archive', False):
+                all_write_download_archive = False
             if failures >= max_failures:
                 self.report_error(
                     f'Skipping the remaining entries in playlist "{title}" since {failures} items failed extraction')
@@ -1885,7 +1894,8 @@ class YoutubeDL:
 
         if ie_result['_type'] == 'multi_video' and not failures:
             if self.params.get('force_write_download_archive') or (
-                    not self.params.get('simulate') and not self.params.get('skip_download')):
+                    all_write_download_archive and not self.params.get('simulate')
+                    and not self.params.get('skip_download')):
                 self.record_download_archive(ie_result)
 
         # Write the updated info to json
@@ -2675,7 +2685,9 @@ class YoutubeDL:
 
         info_dict, _ = self.pre_process(info_dict)
 
-        if self._match_entry(info_dict, incomplete=self._format_fields) is not None:
+        skip_reason = self._match_entry(info_dict, incomplete=self._format_fields)
+        if skip_reason is not None:
+            info_dict['__write_download_archive'] = skip_reason is False
             return info_dict
 
         self.post_extract(info_dict)
@@ -2783,6 +2795,7 @@ class YoutubeDL:
             assert write_archive.issubset({True, False, 'ignore'})
             if True in write_archive and False not in write_archive:
                 self.record_download_archive(info_dict)
+                info_dict['__write_download_archive'] = True
 
             info_dict['requested_downloads'] = downloaded_formats
             info_dict = self.run_all_pps('after_video', info_dict)
