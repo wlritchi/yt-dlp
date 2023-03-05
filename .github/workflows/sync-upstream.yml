@@ -1,0 +1,42 @@
+name: Sync upstream release
+on:
+  workflow_dispatch:
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    - run: |
+        set -euo pipefail
+        set -x
+
+        if [ "$(git branch --show-current | cut -d/ -f1)" != release ]; then
+          exit  # not on a release branch
+        fi
+
+        git reset --hard HEAD~  # drop version bump commit
+
+        git remote add upstream https://github.com/yt-dlp/yt-dlp
+        git fetch upstream release
+
+        if [ "$(git rev-parse upstream/release)" == "$(git merge-base HEAD upstream/release)" ]; then
+          exit  # no new changes
+        fi
+
+        upstream_version="$(git show upstream/release:yt_dlp/version.py | grep '^__version__' | sed -re "s/.*(^']+)'/\1/")"
+        release_name="$(git branch --show-current | cut -d/ -f2)"
+        fork_version="$upstream_version+${release_name}1"
+
+        git config --local user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        git config --local user.name 'GitHub Actions'
+
+        git merge upstream/release --no-edit
+
+        python devscripts/update-version.py "$fork_version"
+        git add yt_dlp/version.py
+        git commit --message "Release $fork_version"
+        git tag "$fork_version"
+        git push origin "release/$release_name" "$fork_version" --force-with-lease
